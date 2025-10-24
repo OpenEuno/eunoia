@@ -1,0 +1,26 @@
+[
+  {
+    "number": "628970325961@c.us",
+    "registeredAt": 1758984133475,
+    "usageCount": 13,
+    "status": "paid",
+    "expireAt": 1761912439885,
+    "quota": 991
+  },
+  {
+    "number": "6282229301962@c.us",
+    "registeredAt": 1759320877158,
+    "usageCount": 96,
+    "status": "paid",
+    "expireAt": 88159234477158,
+    "quota": 999903
+  },
+  {
+    "number": "6282329301771@c.us",
+    "registeredAt": 1760870484194,
+    "usageCount": 0,
+    "status": "paid",
+    "expireAt": 1763462484194,
+    "quota": 99999
+  }
+]
