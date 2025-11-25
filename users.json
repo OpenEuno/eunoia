@@ -10,17 +10,17 @@
   {
     "number": "6282229301962@c.us",
     "registeredAt": 1759320877158,
-    "usageCount": 96,
+    "usageCount": 122,
     "status": "paid",
     "expireAt": 88159234477158,
-    "quota": 999903
+    "quota": 999877
   },
   {
     "number": "6282329301771@c.us",
     "registeredAt": 1760870484194,
-    "usageCount": 0,
+    "usageCount": 5,
     "status": "paid",
     "expireAt": 1763462484194,
-    "quota": 99999
+    "quota": 99994
   }
 ]

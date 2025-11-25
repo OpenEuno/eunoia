@@ -2,11 +2,16 @@ const { loadMemory, appendMemory } = require('./memory.js');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
+const emojiRegexLib = require('emoji-regex');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const EUNOIA_PERSONALITY = require('./eunoia-personality.js'); // ⬅️ IMPORT PERSONALITY
 
 // 🔹 Konfigurasi Gemini
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AIzaSyArRoFaxGa83OMUHFjt_6L71kN_jF2whcM");
+if (!process.env.GEMINI_API_KEY) {
+  console.error('❌ GEMINI_API_KEY tidak ditemukan! Silakan set environment variable.');
+  process.exit(1);
+}
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // 🔹 Cache untuk response cepat
 let responseCache = new Map();
@@ -16,7 +21,13 @@ const client = new Client({
     clientId: "ai-coaching-bot"
   }),
   puppeteer: {
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    executablePath: '/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
   }
 });
 
@@ -71,8 +82,8 @@ async function generateAIResponse(userMessage, userData) {
     const model = genAI.getGenerativeModel({ 
       model: "gemini-2.0-flash",
       generationConfig: {
-        maxOutputTokens: 200,  // agak panjang
-        temperature: 0.7,
+        maxOutputTokens: 100,  // pendek dan efisien
+        temperature: 0.6,
       }
     });
 
@@ -90,6 +101,9 @@ async function generateAIResponse(userMessage, userData) {
     // Hapus markdown **teks**
     cleanResponse = cleanResponse.replace(/\*\*(.*?)\*\*/g, '$1');
 
+    // Hapus semua penggunaan simbol * (asterisk)
+    cleanResponse = cleanResponse.replace(/\*/g, '');
+
     // Hapus bullet point berlebihan
     cleanResponse = cleanResponse.replace(/^[\*\-]\s*/gm, '');
 
@@ -98,31 +112,61 @@ async function generateAIResponse(userMessage, userData) {
 
     // Hapus potongan kalimat ngegantung kayak "Leb."
     cleanResponse = cleanResponse.replace(/\bLeb\.$/gi, '');
-
-    // Simpan ke memory
-    appendMemory(userNumber, "user", userMessage);
-    appendMemory(userNumber, "assistant", response);
-
-    // SMART CHUNKING - bagi berdasarkan kalimat natural
-    const chunks = [];
-    const sentences = cleanResponse.split(/[.!?]+/).filter(s => s.trim().length > 3);
     
-    let currentChunk = "";
-    for (let sentence of sentences) {
-      sentence = sentence.trim() + '.';
-      
-      // Jika chunk sekarang + kalimat baru terlalu panjang, push chunk sekarang
-      if ((currentChunk + sentence).length > 50 && currentChunk.length > 0) {
-        chunks.push(currentChunk.trim());
-        currentChunk = sentence;
-      } else {
-        currentChunk += " " + sentence;
+    // 🚨 HARD EMOJI LIMIT - Batasi emoji maksimal 1 per response
+    const allowedEmojis = ['😂', '😎', '👌', '🤦', '🤷'];
+    
+    // Gunakan emoji-regex library untuk handle semua edge cases (skin-tone, ZWJ, dll)
+    const emojiPattern = emojiRegexLib();
+    const foundEmojis = cleanResponse.match(emojiPattern) || [];
+    
+    // Cari emoji pertama yang allowed (max 1)
+    let keptEmoji = null;
+    for (const emoji of foundEmojis) {
+      // Extract base emoji (first code point)
+      const baseEmoji = emoji.codePointAt(0) ? String.fromCodePoint(emoji.codePointAt(0)) : emoji;
+      if (allowedEmojis.includes(baseEmoji)) {
+        keptEmoji = emoji;  // Simpan emoji pertama yang allowed (with modifiers)
+        break;
       }
     }
     
-    // Push chunk terakhir
-    if (currentChunk.trim().length > 0) {
-      chunks.push(currentChunk.trim());
+    // Hapus SEMUA emoji dari cleanResponse
+    cleanResponse = cleanResponse.replace(emojiPattern, '');
+    
+    // Tambahkan kembali max 1 allowed emoji di akhir
+    if (keptEmoji) {
+      cleanResponse = cleanResponse.trim() + ' ' + keptEmoji;
+    }
+
+    // Simpan ke memory - GUNAKAN CLEANED RESPONSE
+    appendMemory(userNumber, "user", userMessage);
+    appendMemory(userNumber, "assistant", cleanResponse);
+
+    // 🚨 SMART CHUNKING - jangan chunk kalau respon pendek
+    const chunks = [];
+    const sentences = cleanResponse.split(/[.!?]+/).filter(s => s.trim().length > 3);
+    
+    // Kalau cuma 1-2 kalimat atau pendek, jangan di-chunk
+    if (sentences.length <= 2 || cleanResponse.length < 100) {
+      chunks.push(cleanResponse.trim());
+    } else {
+      // Chunk hanya untuk respon panjang
+      let currentChunk = "";
+      for (let sentence of sentences) {
+        sentence = sentence.trim() + '.';
+        
+        if ((currentChunk + sentence).length > 100 && currentChunk.length > 0) {
+          chunks.push(currentChunk.trim());
+          currentChunk = sentence;
+        } else {
+          currentChunk += " " + sentence;
+        }
+      }
+      
+      if (currentChunk.trim().length > 0) {
+        chunks.push(currentChunk.trim());
+      }
     }
 
     // Pastikan minimal 1 chunk
@@ -177,7 +221,27 @@ client.on('message', async msg => {
     if (msg.fromMe) return;
     
     const from = msg.from;
-    const body = msg.body.trim();
+    let body = msg.body.trim();
+    
+    // 🔹 Deteksi mention/tag
+    const mentionedJidList = await msg.getMentions();
+    const isMentioned = mentionedJidList.length > 0;
+    if (isMentioned) {
+      console.log('✅ Bot di-mention:', mentionedJidList);
+    }
+    
+    // 🔹 Deteksi stiker
+    if (msg.type === 'sticker') {
+      console.log('🎨 Stiker diterima');
+      body = "[User mengirim stiker]";
+    }
+    
+    // 🔹 Deteksi foto/gambar
+    if (msg.hasMedia && (msg.type === 'image' || msg.type === 'video')) {
+      console.log('📸 Media diterima:', msg.type);
+      const media = await msg.downloadMedia();
+      body = `[User mengirim ${msg.type}${msg.body ? ': ' + msg.body : ''}]`;
+    }
 
     // === OWNER COMMANDS ===
     if (body.startsWith("/add")) {
@@ -275,6 +339,17 @@ client.on('message', async msg => {
 }); // ⬅️ INI PENUTUP client.on('message')
 
 client.initialize();
+
+// ====== MINI WEB SERVER UNTUK KEEP-ALIVE DAN MONITOR ======
+const express = require("express");
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("🤖 Eunoia WhatsApp bot sedang berjalan dengan baik.");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🌐 Web server aktif di port ${PORT}`));
 
 // 🔹 ✅✅✅ EXPORT FUNGSI - TARUH DI PALING BAWAH SETELAH client.initialize()
 module.exports = {
